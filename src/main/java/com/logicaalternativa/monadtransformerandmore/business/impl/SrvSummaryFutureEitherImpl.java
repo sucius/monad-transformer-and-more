@@ -3,7 +3,6 @@ package com.logicaalternativa.monadtransformerandmore.business.impl;
 import com.logicaalternativa.monadtransformerandmore.bean.*;
 import com.logicaalternativa.monadtransformerandmore.errors.impl.MyError;
 import scala.Tuple2;
-import scala.collection.immutable.Stream;
 import scala.concurrent.ExecutionContext;
 import scala.concurrent.Future;
 import scala.util.Either;
@@ -24,8 +23,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
-import static akka.dispatch.Futures.successful;
-import static java.util.Collections.singleton;
+import static com.logicaalternativa.monadtransformerandmore.util.Java8.recoverF;
 
 public class SrvSummaryFutureEitherImpl implements SrvSummaryFutureEither<Error> {
 
@@ -64,11 +62,9 @@ public class SrvSummaryFutureEitherImpl implements SrvSummaryFutureEither<Error>
         else
             return new Left(new MyError("It is impossible to get book summary"));
 
-        Sales s;
+        Optional<Sales> sales = Optional.empty();
         if (salesEither.isRight())
-            s = salesEither.right().get();
-        else
-            return new Left(new MyError("It is impossible to get book summary"));
+            sales = Optional.of(salesEither.right().get());
 
         Author a;
         if (authorEither.isRight())
@@ -84,7 +80,7 @@ public class SrvSummaryFutureEitherImpl implements SrvSummaryFutureEither<Error>
         else
             return new Left(new MyError("It is impossible to get book summary"));
 
-        Summary summary = new Summary(b, chapters, Optional.of(s), a);
+        Summary summary = new Summary(b, chapters, sales, a);
         return new Right(summary);
     }
 
@@ -93,23 +89,12 @@ public class SrvSummaryFutureEitherImpl implements SrvSummaryFutureEither<Error>
     public Future<Either<Error, Summary>> getSummary(Integer idBook) {
         final ExecutionContext ec = ExecutionContexts.global();
 
-        final Future<Either<Error, Book>> book = srvBook.getBook(idBook);
+        final Future<Either<Error, Book>> book = srvBook.getBook(idBook).recover(
+                recoverF(e -> new Left<>(new MyError(e.getMessage())))
+                , ec);
         final Future<Either<Error, Sales>> sales = srvSales.getSales(idBook);
         final Future<Either<Error, Author>> author = book.flatMap(this::raiseBook, ec);
-        final Future<Either<Error, List<Chapter>>> listChapters = book.map((Either<Error, Book> b) -> {
-                    if (b.isRight()) {
-                        List<Future<Either<Error, Chapter>>> collect = b.right().get()
-                                .getChapters()
-                                .stream()
-                                .map(l -> srvChapter.getChapter(l))
-                                .collect(Collectors.toList());
-                        Future<Iterable<Either<Error, Chapter>>> sequence = Futures.sequence(collect, ec);
-                        Future<List<Chapter>> map = sequence.map(p -> StreamSupport.stream(p.spliterator(), true).map(c -> c.right().get()).collect(Collectors.toList()), ec);
-                        return new Right(map.map(t -> StreamSupport.stream(t.spliterator(), true).collect(Collectors.toList()), ec));
-                    }
-                    return new Left(b.left());
-                }
-                , ec);
+        final Future<Either<Error, List<Chapter>>> listChapters = book.flatMap((Either<Error, Book> b) -> raiseChapters(ec, b) ,ec);
 
         Future<Tuple2<Either<Error, Book>, Either<Error, Sales>>> zipBookAndSales = book.zip(sales);
         Future<Tuple2<Either<Error, List<Chapter>>, Either<Error, Author>>> zipAuthorAndChapters = listChapters.zip(author);
@@ -120,6 +105,32 @@ public class SrvSummaryFutureEitherImpl implements SrvSummaryFutureEither<Error>
 
         return zipTotal.map(SrvSummaryFutureEitherImpl::applyFunction, ec);
 
+    }
+
+    private Future<Either<Error, List<Chapter>>> raiseChapters(ExecutionContext ec, Either<Error, Book> b) {
+        if (b.isRight()) {
+            List<Future<Either<Error, Chapter>>> collect = b.right().get()
+                    .getChapters()
+                    .stream()
+                    .map(l -> srvChapter.getChapter(l))
+                    .collect(Collectors.toList());
+            Future<Iterable<Either<Error, Chapter>>> sequence = Futures.sequence(collect, ec);
+            return sequence.map(p -> {
+                final Map<Boolean, List<Either<Error, Chapter>>> groupBy =
+                        StreamSupport.stream(p.spliterator(), true)
+                                .collect(Collectors.groupingBy(Either::isRight));
+                if (groupBy.get(false) != null && !groupBy.get(false).isEmpty()) {
+                    return new Left<>(groupBy.get(false).get(0).left().get());
+                }
+                final List<Chapter> chapterList = groupBy.get(true)
+                        .stream()
+                        .map(s -> s.right().get())
+                        .collect(Collectors.toList());
+
+                return new Right<>(chapterList);
+            }, ec);
+        }
+        return Futures.successful(new Left(b.left().get()));
     }
 
     private Future<Either<Error, Author>> raiseBook(Either<Error, Book> b) {
