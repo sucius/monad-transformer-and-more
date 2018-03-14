@@ -94,7 +94,7 @@ public class SrvSummaryFutureEitherImpl implements SrvSummaryFutureEither<Error>
                 , ec);
         final Future<Either<Error, Sales>> sales = srvSales.getSales(idBook);
         final Future<Either<Error, Author>> author = book.flatMap(this::raiseBook, ec);
-        final Future<Either<Error, List<Chapter>>> listChapters = book.flatMap((Either<Error, Book> b) -> raiseChapters(ec, b) ,ec);
+        final Future<Either<Error, List<Chapter>>> listChapters = book.flatMap(bookEither -> raiseChapters(ec, bookEither), ec);
 
         Future<Tuple2<Either<Error, Book>, Either<Error, Sales>>> zipBookAndSales = book.zip(sales);
         Future<Tuple2<Either<Error, List<Chapter>>, Either<Error, Author>>> zipAuthorAndChapters = listChapters.zip(author);
@@ -109,28 +109,35 @@ public class SrvSummaryFutureEitherImpl implements SrvSummaryFutureEither<Error>
 
     private Future<Either<Error, List<Chapter>>> raiseChapters(ExecutionContext ec, Either<Error, Book> b) {
         if (b.isRight()) {
-            List<Future<Either<Error, Chapter>>> collect = b.right().get()
-                    .getChapters()
-                    .stream()
-                    .map(l -> srvChapter.getChapter(l))
-                    .collect(Collectors.toList());
-            Future<Iterable<Either<Error, Chapter>>> sequence = Futures.sequence(collect, ec);
-            return sequence.map(p -> {
-                final Map<Boolean, List<Either<Error, Chapter>>> groupBy =
-                        StreamSupport.stream(p.spliterator(), true)
-                                .collect(Collectors.groupingBy(Either::isRight));
-                if (groupBy.get(false) != null && !groupBy.get(false).isEmpty()) {
-                    return new Left<>(groupBy.get(false).get(0).left().get());
-                }
-                final List<Chapter> chapterList = groupBy.get(true)
-                        .stream()
-                        .map(s -> s.right().get())
-                        .collect(Collectors.toList());
+            List<Future<Either<Error, Chapter>>> collect =
+                    b.right().get()
+                            .getChapters()
+                            .stream()
+                            .map(l -> srvChapter.getChapter(l))
+                            .collect(Collectors.toList());
 
-                return new Right<>(chapterList);
-            }, ec);
+            Future<Iterable<Either<Error, Chapter>>> sequence = Futures.sequence(collect, ec);
+
+            return sequence.map(this::getListOfChapters, ec);
         }
-        return Futures.successful(new Left(b.left().get()));
+        return Futures.successful(new Left<>(b.left().get()));
+    }
+
+    private Either<Error, List<Chapter>> getListOfChapters(Iterable<Either<Error, Chapter>> p) {
+        final Map<Boolean, List<Either<Error, Chapter>>> groupBy =
+                StreamSupport.stream(p.spliterator(), true)
+                        .collect(Collectors.groupingBy(Either::isRight));
+
+        if (groupBy.get(false) != null && !groupBy.get(false).isEmpty()) {
+            return new Left<>(groupBy.get(false).get(0).left().get());
+        }
+
+        final List<Chapter> chapterList = groupBy.get(true)
+                .stream()
+                .map(s -> s.right().get())
+                .collect(Collectors.toList());
+
+        return new Right<>(chapterList);
     }
 
     private Future<Either<Error, Author>> raiseBook(Either<Error, Book> b) {
