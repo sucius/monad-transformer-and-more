@@ -35,7 +35,27 @@ public class MonadFutEitherError implements MonadFutEither<Error> {
 			Future<Either<Error, A>> from,
 			Function<A, Future<Either<Error, T>>> f) {
 		
-		return $_notYetImpl();
+
+		return from.flatMap(
+
+				aE -> {
+
+					if ( aE.isLeft() ) {
+
+						return raiseError( aE.left().get() );
+
+					} else {
+
+						A a = aE.right().get();
+
+						return f.apply( a );
+
+					}
+
+				}, ec)
+				.recoverWith(Java8.recoverF(
+						e ->raiseError(new MyError(e.getMessage())
+				)  ), ec);
 	}
 
 	@Override
