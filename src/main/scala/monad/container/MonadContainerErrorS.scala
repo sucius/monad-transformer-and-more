@@ -22,7 +22,7 @@ class MonadContainerErrorS extends Monad[Error, ContainerError] {
 
   def flatMap[A, T](from: ContainerError[A], f: (A) => ContainerError[T]): ContainerError[T] = {
     if (from.isOk) {
-      f(from.getValue)
+      fromException(f(from.getValue))
     } else {
       raiseError(from.getError)
     }
@@ -32,9 +32,18 @@ class MonadContainerErrorS extends Monad[Error, ContainerError] {
 
   def recoverWith[T](from: ContainerError[T], f: (Error) => ContainerError[T]): ContainerError[T] = {
     if (from.isOk) {
-      pure(from.getValue)
+      from
     } else {
-      f(from.getError)
+      fromException(f(from.getError))
+    }
+  }
+
+  //Lazy evaluation of con
+  private def fromException[T](con: => ContainerError[T]): ContainerError[T] = {
+    try {
+      con
+    } catch {
+      case t: Throwable => raiseError(new MyError(t.getMessage))
     }
   }
 
